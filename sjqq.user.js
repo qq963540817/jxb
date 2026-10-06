@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         手机腾讯选集
-// @version      1
+// @version      2
 // @description  无聊折腾好玩的，能不能用不清楚
 // @author       屏幕前的你
 // @noframes
@@ -400,6 +400,7 @@
             const el = document.querySelector(WRAPPER_SELECTORS[i]);
             if (el) return el;
         }
+        
         return null;
     }
 
@@ -535,41 +536,53 @@
                 overflow-x:auto;overflow-y:hidden;
                 gap:8px;padding:4px 0;
                 -webkit-overflow-scrolling:touch;
+                contain: layout style paint;
             `;
 
             pagerContainer.textContent = '';
             pagerContainer.style.display = 'none';
 
-            const fragment = document.createDocumentFragment();
-            for (let i = 0; i < totalEpisodes; i++) {
-                const ep = episodes[i];
-                if (!ep.image) continue;
-                const isCurrent = ep.vid === currentVid;
+            const currentIndex = episodes.findIndex(ep => ep.vid === currentVid && ep.image);
+            const centerIndex = currentIndex >= 0 ? currentIndex : 0;
 
+            const CHUNK_SIZE = 30;
+            const MAX_DOM = 120;
+
+            let renderStart = Math.max(0, centerIndex - Math.floor(CHUNK_SIZE / 2));
+            let renderEnd = Math.min(totalEpisodes, renderStart + CHUNK_SIZE);
+
+            function createCard(ep, idx) {
+                const isCurrent = ep.vid === currentVid;
                 const item = document.createElement('div');
+                item.dataset.idx = idx;
                 item.style.cssText = `
                     flex:0 0 auto;width:140px;cursor:pointer;text-align:center;
                     border-radius:6px;overflow:hidden;
                     background:${isCurrent ? '#e6f4ff' : '#fff'};
                     border:${isCurrent ? '2px solid #00a1ff' : '2px solid transparent'};
                     box-sizing:border-box;
+                    content-visibility:auto;
+                    contain-intrinsic-size:140px 114px;
                 `;
 
                 const imgWrap = document.createElement('div');
                 imgWrap.style.cssText = `
-                    position:relative;width:100%;height:80px;
-                    background:#f2f2f2 center/cover no-repeat;
-                    background-image:url('${ep.image}');
+                    position:relative;width:100%;height:80px;background:#f2f2f2;
                 `;
-                item.appendChild(imgWrap);
+
+                const img = document.createElement('img');
+                img.loading = 'lazy';
+                img.decoding = 'async';
+                img.src = ep.image;
+                img.style.cssText = `
+                    width:100%;height:100%;object-fit:cover;display:block;
+                `;
+                imgWrap.appendChild(img);
 
                 if (ep.tagImage) {
                     const tagEl = document.createElement('img');
                     tagEl.src = ep.tagImage;
-                    tagEl.style.cssText = `
-                        position:absolute;top:0;right:0;
-                        height:18px;width:auto;pointer-events:none;
-                    `;
+                    tagEl.style.cssText = `position:absolute;top:0;right:0;height:18px;width:auto;pointer-events:none;`;
                     imgWrap.appendChild(tagEl);
                 }
 
@@ -587,6 +600,8 @@
                     imgWrap.appendChild(dateEl);
                 }
 
+                item.appendChild(imgWrap);
+
                 const title = document.createElement('div');
                 title.textContent = ep.originTitle || ep.title;
                 title.style.cssText = `
@@ -602,17 +617,86 @@
                     if (isCurrent) return;
                     window.location.href = window.location.href.replace(/vid=[^&]+/, `vid=${ep.vid}`);
                 };
-                fragment.appendChild(item);
-            }
-            listContainer.appendChild(fragment);
 
-            const currentIndex = episodes.findIndex(ep => ep.vid === currentVid && ep.image);
+                return item;
+            }
+
+            function renderChunk(start, end) {
+                const frag = document.createDocumentFragment();
+                for (let i = start; i < end; i++) {
+                    const ep = episodes[i];
+                    if (!ep.image) continue;
+                    frag.appendChild(createCard(ep, i));
+                }
+                return frag;
+            }
+
+            listContainer.appendChild(renderChunk(renderStart, renderEnd));
+
             if (currentIndex >= 0) {
                 requestAnimationFrame(() => {
-                    const target = listContainer.children[currentIndex];
+                    const target = listContainer.querySelector(`[data-idx="${currentIndex}"]`);
                     if (target) listContainer.scrollLeft = target.offsetLeft - 20;
                 });
             }
+
+            let loading = false;
+            let scrollTimer = null;
+
+            listContainer.addEventListener('scroll', () => {
+                if (scrollTimer) return;
+                scrollTimer = requestAnimationFrame(() => {
+                    scrollTimer = null;
+                    if (loading) return;
+                    loading = true;
+
+                    const scrollLeft = listContainer.scrollLeft;
+                    const clientWidth = listContainer.clientWidth;
+                    const scrollWidth = listContainer.scrollWidth;
+
+                    if (scrollLeft + clientWidth > scrollWidth - 300 && renderEnd < totalEpisodes) {
+                        const newEnd = Math.min(totalEpisodes, renderEnd + CHUNK_SIZE);
+                        listContainer.appendChild(renderChunk(renderEnd, newEnd));
+                        renderEnd = newEnd;
+                    }
+
+                    if (scrollLeft < 300 && renderStart > 0) {
+                        const oldScrollWidth = scrollWidth;
+                        const newStart = Math.max(0, renderStart - CHUNK_SIZE);
+                        listContainer.insertBefore(renderChunk(newStart, renderStart), listContainer.firstChild);
+                        const newScrollWidth = listContainer.scrollWidth;
+                        listContainer.scrollLeft += (newScrollWidth - oldScrollWidth);
+                        renderStart = newStart;
+                    }
+
+                    const domCount = listContainer.childElementCount;
+                    if (domCount > MAX_DOM) {
+                        const centerIdx = Math.floor((renderStart + renderEnd) / 2);
+                        const firstIdx = parseInt(listContainer.firstChild.dataset.idx, 10);
+                        const lastIdx = parseInt(listContainer.lastChild.dataset.idx, 10);
+
+                        if (centerIdx - firstIdx > lastIdx - centerIdx) {
+                            const removeCount = Math.floor(CHUNK_SIZE / 2);
+                            for (let k = 0; k < removeCount; k++) {
+                                const el = listContainer.firstChild;
+                                if (!el) break;
+                                listContainer.removeChild(el);
+                                renderStart++;
+                            }
+                        } else {
+                            const removeCount = Math.floor(CHUNK_SIZE / 2);
+                            for (let k = 0; k < removeCount; k++) {
+                                const el = listContainer.lastChild;
+                                if (!el) break;
+                                listContainer.removeChild(el);
+                                renderEnd--;
+                            }
+                        }
+                    }
+
+                    loading = false;
+                });
+            }, { passive: true });
         }
 
         function applyMode() {
