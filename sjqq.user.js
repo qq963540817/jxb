@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         手机腾讯选集
-// @version      2
+// @version      3
 // @description  无聊折腾好玩的，能不能用不清楚
 // @author       屏幕前的你
 // @noframes
