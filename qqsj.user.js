@@ -91,21 +91,29 @@
     const RE_SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
     const RE_PLAY_PAGE = /^https?:\/\/m\.v\.qq\.com\/x\/m\/play/;
     const RE_STRIP_ATTR = /[^\w\u4e00-\u9fa5]+/g;
-    const RE_TAG_3X = /3X=([^;]+)/;
-    const RE_TAG_2X = /2X=([^;]+)/;
-    const RE_TAG_1X = /1X=([^;]+)/;
-    const RE_YEAR = /^20\d{2}$/;
+    const RE_TAG_3X = /3X\s*?=\s*?([^;]+)/;
+    const RE_TAG_2X = /2X\s*?=\s*?([^;]+)/;
+    const RE_TAG_1X = /1X\s*?=\s*?([^;]+)/;
+    const RE_YEAR = /^\s*?[12]\d{3}\s*?$/;
     const RE_DATE_DASH = /-/g;
 
-    const EXTRA_KEYWORDS = ['预告', '特辑', '剧场版', '客栈', '花絮', '彩蛋', '前瞻', '回顾', 'PV', 'MV', '定档'];
+
+    const EXTRA_KEYWORDS = [
+        '预告', '特辑', '剧场版', '客栈', '花絮', '彩蛋', '前瞻', '回顾', 'PV', 'MV', '定档', '旅行', '陪看', '纯享', '直播回放',
+        /解[说說]|彩蛋|看[点點]|花絮|[预預]告|片[花段]|神[剧劇]亮了/, /^[^:：]+?(?:抢先看|先导片)[^:：]*?[:：]/
+    ];
     const FALLBACK_PREFIXES = ['先导片', '抢先看'];
 
     function escapeReg(s) {
         return s.replace(RE_STRIP_ATTR, '\\$&');
     }
 
-    const EXTRA_PATTERNS = EXTRA_KEYWORDS.map(k => k instanceof RegExp ? k : new RegExp(escapeReg(k)));
-    const FALLBACK_PATTERNS = FALLBACK_PREFIXES.map(k => k instanceof RegExp ? k : new RegExp('^' + escapeReg(k)));
+    const EXTRA_PATTERNS = EXTRA_KEYWORDS.map(k =>
+        k instanceof RegExp ? k : new RegExp(escapeReg(k))
+    );
+    const FALLBACK_PATTERNS = FALLBACK_PREFIXES.map(k =>
+        k instanceof RegExp ? k : new RegExp('^' + escapeReg(k))
+    );
 
     function makeGuid() {
         let s = '';
@@ -159,6 +167,12 @@
         for (let i = 0; i < patterns.length; i++) {
             if (patterns[i].test(title)) return true;
         }
+        return false;
+    }
+
+    function isNumericTitle(t) {
+        if (RE_PURE_NUM.test(t)) return true;
+        if (RE_EPISODE.test(t)) return true;
         return false;
     }
 
@@ -229,9 +243,19 @@
                             let accept;
                             if (isMode0) {
                                 if (type === 'pc_detail_ep_list') {
-                                    accept = RE_PURE_NUM.test(rawTitle) || RE_EPISODE.test(rawTitle);
+                                    accept = false;
                                 } else {
-                                    accept = true;
+                                    const isExtra = matchesAny(rawTitle, EXTRA_PATTERNS);
+                                    if (isExtra) {
+                                        accept = false;
+                                    } else {
+                                        const dmt = params.desk_module_type;
+                                        if (dmt === 'episode_list' || dmt === undefined) {
+                                            accept = true;
+                                        } else {
+                                            accept = false;
+                                        }
+                                    }
                                 }
                             } else if (isMode1) {
                                 accept = matchesAny(rawTitle, patternList);
@@ -289,7 +313,7 @@
     function fetchEpisodes(cid, currentVid, callback) {
         const cached = episodeCache.get(cid);
         if (cached) {
-            callback(cached.episodes, cached.year);
+            callback(cached.episodes, cached.year, cached.episodeAll);
             return;
         }
 
@@ -318,28 +342,51 @@
         const seen = new Set();
         let episodeCard = null;
         let activeYear = null;
+        let episodeAll = 0;
 
         const firstPayload = JSON.parse(JSON.stringify(basePayload));
         firstPayload.page_context = {};
 
         request(ch, firstPayload, function(data) {
-            if (!data) { callback([], activeYear); return; }
+            if (!data) { callback([], activeYear, episodeAll); return; }
 
             function scanCards(cardList) {
                 if (!cardList || cardList.length === 0) return;
-                for (let i = 0; i < cardList.length; i++) {
-                    const card = cardList[i];
+                const stack = cardList.slice();
+                while (stack.length > 0) {
+                    const card = stack.pop();
                     if (!card || typeof card !== 'object') continue;
                     const t = card.type;
-                    if (t !== 'pc_introduction' && t !== 'pc_web_episode_list' && t !== 'pc_detail_ep_list') continue;
-                    if (t === 'pc_web_episode_list') {
-                        episodeCard = card;
+
+                    if (t === 'pc_introduction') {
+                        const p = card.params;
+                        if (p && p.episode_all) {
+                            const epAll = parseInt(p.episode_all, 10);
+                            if (Number.isFinite(epAll) && epAll > 0) episodeAll = epAll;
+                        }
+                    } else if (t === 'pc_web_episode_list') {
+                        if (!episodeCard || !episodeCard.params || !episodeCard.params.tabs) {
+                            episodeCard = card;
+                        }
                         if (!activeYear) {
                             const y = findActiveYear(card);
                             if (y) activeYear = y;
                         }
+                        collectCards(card, cid, episodes, seen, 0, cid);
+                    } else if (t === 'pc_detail_ep_list') {
+                        collectCards(card, cid, episodes, seen, 0, cid);
                     }
-                    collectCards(card, cid, episodes, seen, 0, cid);
+
+                    if (card.children_list) {
+                        for (const key in card.children_list) {
+                            const group = card.children_list[key];
+                            if (group && group.cards) {
+                                for (let i = 0; i < group.cards.length; i++) {
+                                    stack.push(group.cards[i]);
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -397,7 +444,7 @@
                         for (let i = 0; i < cards.length; i++) {
                             const card = cards[i];
                             if (!card || !card.params) continue;
-                            if (card.type !== 'pc_web_episode_list' && card.type !== 'pc_detail_ep_list') continue;
+                            if (card.type !== 'pc_web_episode_list') continue;
                             if (card.params.page_type !== 'detail_operation') continue;
                             const context = card.params.page_context;
                             if (typeof context !== 'string' || !context || !isSafeId(pageId)) continue;
@@ -446,13 +493,14 @@
                 const uniqueMap = new Map();
                 for (let i = 0; i < episodes.length; i++) {
                     const ep = episodes[i];
-                    const key = ep.num !== 0 ? ('n_' + ep.num) : ('v_' + ep.vid);
+                    const pw = partWeight(ep.title);
+                    const key = ep.num !== 0 ? ('n_' + ep.num + '_' + pw) : ('v_' + ep.vid);
                     const prev = uniqueMap.get(key);
                     if (!prev) uniqueMap.set(key, ep);
                     else if (prev.isTrailer && !ep.isTrailer) uniqueMap.set(key, ep);
                 }
 
-                const finalEpisodes = [];
+                let finalEpisodes = [];
                 uniqueMap.forEach(v => finalEpisodes.push(v));
 
                 let autoIndex = 0;
@@ -504,8 +552,29 @@
                     });
                 }
 
-                episodeCache.set(cid, { episodes: finalEpisodes, year: activeYear });
-                callback(finalEpisodes, activeYear);
+                if (finalEpisodes.length > 0) {
+                    let firstNonNum = -1;
+                    for (let i = 0; i < finalEpisodes.length; i++) {
+                        if (!isNumericTitle(finalEpisodes[i].title)) {
+                            firstNonNum = i;
+                            break;
+                        }
+                    }
+                    if (firstNonNum > 0) {
+                        const filtered = [];
+                        for (let i = 0; i < finalEpisodes.length; i++) {
+                            if (i < firstNonNum) {
+                                filtered.push(finalEpisodes[i]);
+                            } else if (isNumericTitle(finalEpisodes[i].title)) {
+                                filtered.push(finalEpisodes[i]);
+                            }
+                        }
+                        finalEpisodes = filtered;
+                    }
+                }
+
+                episodeCache.set(cid, { episodes: finalEpisodes, year: activeYear, episodeAll: episodeAll });
+                callback(finalEpisodes, activeYear, episodeAll);
             }
         });
     }
