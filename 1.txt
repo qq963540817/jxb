@@ -60,10 +60,10 @@ https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/222.user.js
 
 手机腾讯网页选集脚本:
 
-https://seep.eu.org/https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/sjqq.user.js
-https://p.xbta.cc/https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/sjqq.user.js
-https://gcore.jsdelivr.net/gh/qq963540817/jxb@main/sjqq.user.js
-https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/sjqq.user.js
+https://seep.eu.org/https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/qqsj.user.js
+https://p.xbta.cc/https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/qqsj.user.js
+https://gcore.jsdelivr.net/gh/qq963540817/jxb@main/qqsj.user.js
+https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/qqsj.user.js
 
 
 网站规则自定义写法如下例子:
