@@ -1,8 +1,8 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         手机腾讯选集
-// @version      963540817
+// @version      1
 // @description  无聊折腾好玩的，能不能用不清楚
-// @author       Assistant
+// @author       屏幕前的你
 // @noframes
 // @match        *://m.v.qq.com/*
 // @grant        GM_xmlhttpRequest
@@ -17,11 +17,23 @@
     if (window.__tmQQEpisodeRunning) return;
     window.__tmQQEpisodeRunning = true;
 
-    // ========== 请求封装 ==========
     const HAS_GM = typeof GM_xmlhttpRequest === 'function';
-
-    // 缓存：同一 cid 的结果只请求一次
     const episodeCache = new Map();
+
+    const WRAPPER_SELECTORS = [
+        'div[class="playable-wrapper"]',
+        'div[class="video-desc-rebuild"]'
+    ];
+
+    const MODE_KEY = 'tmQQEpisodeMode';
+    let savedMode = 'page';
+    try {
+        const m = localStorage.getItem(MODE_KEY);
+        if (m === 'scroll' || m === 'page') savedMode = m;
+    } catch (e) {}
+    function saveMode(mode) {
+        try { localStorage.setItem(MODE_KEY, mode); } catch (e) {}
+    }
 
     function request(ch, payload, done) {
         const body = JSON.stringify(payload);
@@ -40,41 +52,49 @@
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
                 }, headers),
                 data: body,
-                onload: function(response) { parseResponse(response.responseText, done); },
+                onload: function(r) { parseResponse(r.responseText, done); },
                 onerror: function() { done(null); }
             });
         } else {
             fetch(ch.apiUrl, {
                 method: 'POST', headers, body,
                 mode: 'cors', credentials: 'omit'
-            }).then(res => res.text()).then(text => parseResponse(text, done)).catch(() => done(null));
+            }).then(r => r.text()).then(t => parseResponse(t, done)).catch(() => done(null));
         }
     }
 
     function parseResponse(text, done) {
         try {
             const data = JSON.parse(text);
-            if (data.ret !== 0 || !data.data || !Array.isArray(data.data.CardList)) {
-                done(null);
-            } else {
-                done(data.data);
-            }
+            done(data.ret === 0 && data.data && data.data.CardList ? data.data : null);
         } catch (e) {
             done(null);
         }
     }
 
-    // ========== 工具函数（正则预编译，复用） ==========
     const RE_PURE_NUM = /^\d+$/;
     const RE_EPISODE = /^第\d+(集|期)/;
     const RE_EPISODE_NUM = /第(\d+)(集|期)/;
     const RE_SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
     const RE_PLAY_PAGE = /^https?:\/\/m\.v\.qq\.com\/x\/m\/play/;
+    const RE_STRIP_ATTR = /[^\w\u4e00-\u9fa5]+/g;
+    const RE_TAG_3X = /3X=([^;]+)/;
+    const RE_TAG_2X = /2X=([^;]+)/;
+    const RE_TAG_1X = /1X=([^;]+)/;
+
     const EXTRA_KEYWORDS = ['预告', '特辑', '剧场版', '客栈', '花絮', '彩蛋', '抢先看', '前瞻', '回顾', 'PV', 'MV', '定档'];
+    const FALLBACK_PREFIXES = ['先导片', '抢先看'];
+
+    function escapeReg(s) {
+        return s.replace(RE_STRIP_ATTR, '\\$&');
+    }
+
+    const EXTRA_PATTERNS = EXTRA_KEYWORDS.map(k => k instanceof RegExp ? k : new RegExp(escapeReg(k)));
+    const FALLBACK_PATTERNS = FALLBACK_PREFIXES.map(k => k instanceof RegExp ? k : new RegExp('^' + escapeReg(k)));
 
     function makeGuid() {
         let s = '';
-        for (let i = 0; i < 16; i++) s += Math.floor(Math.random() * 16).toString(16);
+        for (let i = 0; i < 16; i++) s += ((Math.random() * 16) | 0).toString(16);
         return s;
     }
 
@@ -92,26 +112,6 @@
         return count === (end - begin + 1);
     }
 
-    function isMainEpisode(title) {
-        if (!title) return false;
-        return RE_PURE_NUM.test(title) || RE_EPISODE.test(title);
-    }
-
-    function isExtraContent(title) {
-        if (!title) return false;
-        for (let i = 0; i < EXTRA_KEYWORDS.length; i++) {
-            if (title.indexOf(EXTRA_KEYWORDS[i]) !== -1) return true;
-        }
-        return false;
-    }
-
-    function extractEpisodeNumber(title) {
-        if (!title) return 999999;
-        if (RE_PURE_NUM.test(title)) return parseInt(title, 10);
-        const match = title.match(RE_EPISODE_NUM);
-        return match ? parseInt(match[1], 10) : 999999;
-    }
-
     function partWeight(title) {
         if (title.indexOf('加更上') !== -1) return 4;
         if (title.indexOf('加更下') !== -1) return 5;
@@ -124,39 +124,91 @@
         return 0;
     }
 
-    // ========== 收集卡片（迭代式遍历，避免递归栈） ==========
-    function collectCards(root, cid, episodes, seen) {
+    function extractEpisodeNumber(title) {
+        if (RE_PURE_NUM.test(title)) return parseInt(title, 10);
+        const m = title.match(RE_EPISODE_NUM);
+        return m ? parseInt(m[1], 10) : 999999;
+    }
+
+    function extractTagImage(imgtagJson) {
+        if (typeof imgtagJson !== 'string' || !imgtagJson) return '';
+        try {
+            const obj = JSON.parse(imgtagJson);
+            for (const key in obj) {
+                const tag = obj[key];
+                if (!tag || typeof tag !== 'object') continue;
+                const param = tag.param;
+                if (typeof param !== 'string' || !param) continue;
+                let m = param.match(RE_TAG_3X);
+                if (m) return m[1];
+                m = param.match(RE_TAG_2X);
+                if (m) return m[1];
+                m = param.match(RE_TAG_1X);
+                if (m) return m[1];
+            }
+        } catch (e) {}
+        return '';
+    }
+
+    function matchesAny(title, patterns) {
+        for (let i = 0; i < patterns.length; i++) {
+            if (patterns[i].test(title)) return true;
+        }
+        return false;
+    }
+
+    function collectCards(root, cid, episodes, seen, mode, expectedCid) {
         const stack = [root];
+        const patternList = mode === 1 ? FALLBACK_PATTERNS : null;
+        const isMode0 = mode === 0;
+        const isMode1 = mode === 1;
+
         while (stack.length > 0) {
             const node = stack.pop();
             if (!node || typeof node !== 'object') continue;
 
             if (Array.isArray(node)) {
-                for (let i = 0; i < node.length; i++) stack.push(node[i]);
+                for (let i = 0; i < node.length; i++) {
+                    const v = node[i];
+                    if (v && typeof v === 'object') stack.push(v);
+                }
                 continue;
             }
 
-            // 分集卡片
-            if ((node.type === 'pc_web_episode_list' || node.type === 'pc_detail_ep_list') && node.params) {
-                const params = node.params;
-                const vid = typeof params.vid === 'string' ? params.vid.trim() : '';
-                const rawTitle = (params.c_title_output ?? params.title ?? '').toString().trim();
-                if (isSafeId(vid) && rawTitle && !seen.has(vid)) {
-                    if (isMainEpisode(rawTitle) && !isExtraContent(rawTitle)) {
-                        seen.add(vid);
-                        episodes.push({ num: 0, title: rawTitle, vid: vid, isTrailer: params.is_trailer === '1' });
-                    }
-                }
-            }
-
-            // 兜底：id 即 vid
-            if (node.id && typeof node.id === 'string' && isSafeId(node.id) && node.params) {
-                const params = node.params;
-                const rawTitle = (params.c_title_output ?? params.title ?? '').toString().trim();
-                if (rawTitle && !seen.has(node.id)) {
-                    if (isMainEpisode(rawTitle) && !isExtraContent(rawTitle)) {
-                        seen.add(node.id);
-                        episodes.push({ num: 0, title: rawTitle, vid: node.id, isTrailer: params.is_trailer === '1' });
+            const type = node.type;
+            const params = node.params;
+            if (params) {
+                if (type === 'pc_web_episode_list' || type === 'pc_detail_ep_list') {
+                    if (params.page_type !== 'detail_operation' && params.image_url) {
+                        const vid = params.vid;
+                        const epCid = params.cid;
+                        if (epCid === expectedCid && vid && isSafeId(vid) && isSafeId(epCid) && !seen.has(vid)) {
+                            const rawTitle = (params.c_title_output || params.title || '').trim();
+                            if (rawTitle) {
+                                let accept;
+                                if (isMode0) {
+                                    accept = (RE_PURE_NUM.test(rawTitle) || RE_EPISODE.test(rawTitle)) && !matchesAny(rawTitle, EXTRA_PATTERNS);
+                                } else if (isMode1) {
+                                    accept = matchesAny(rawTitle, patternList);
+                                } else {
+                                    accept = true;
+                                }
+                                if (accept) {
+                                    seen.add(vid);
+                                    episodes.push({
+                                        num: extractEpisodeNumber(rawTitle),
+                                        title: rawTitle,
+                                        originTitle: (params.title || rawTitle).trim(),
+                                        vid: vid,
+                                        cid: epCid,
+                                        image: params.image_url,
+                                        date: params.tag_right_text || '',
+                                        tagImage: extractTagImage(params.imgtag_all),
+                                        isTrailer: params.is_trailer === '1'
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -168,13 +220,9 @@
         }
     }
 
-    // ========== 获取集数 ==========
     function fetchEpisodes(cid, currentVid, callback) {
-        // 缓存命中
-        if (episodeCache.has(cid)) {
-            callback(episodeCache.get(cid));
-            return;
-        }
+        const cached = episodeCache.get(cid);
+        if (cached) { callback(cached); return; }
 
         const guid = makeGuid();
         const apiUrl = `https://pbaccess.video.qq.com/trpc.vector_layout.page_view.PageService/getPage?vdevice_guid=${guid}&video_appid=3000010&vversion_name=8.5.96&vversion_platform=2`;
@@ -200,21 +248,24 @@
         const episodes = [];
         const seen = new Set();
         let episodeCard = null;
+        let firstData = null;
 
         const firstPayload = JSON.parse(JSON.stringify(basePayload));
         firstPayload.page_context = {};
 
         request(ch, firstPayload, function(data) {
             if (!data) { callback([]); return; }
+            firstData = data;
 
             function scanCards(cardList) {
+                if (!cardList || cardList.length === 0) return;
                 for (let i = 0; i < cardList.length; i++) {
                     const card = cardList[i];
                     if (!card || typeof card !== 'object') continue;
-                    if (card.type === 'pc_web_episode_list') {
-                        episodeCard = card;
-                        collectCards(card, cid, episodes, seen);
-                    }
+                    const t = card.type;
+                    if (t !== 'pc_introduction' && t !== 'pc_web_episode_list') continue;
+                    if (t === 'pc_web_episode_list') episodeCard = card;
+                    collectCards(card, cid, episodes, seen, 0, cid);
                 }
             }
 
@@ -225,7 +276,7 @@
                     currentData.has_next_page === 1 ||
                     currentData.has_next_page === '1' ||
                     currentData.has_next_page === 'true';
-                if (episodeCard || !hasNext || depth > 10) { finish(); return; }
+                if (!hasNext || depth > 10) { finish(); return; }
 
                 const nextPayload = JSON.parse(JSON.stringify(basePayload));
                 nextPayload.page_context = currentData.page_context || {};
@@ -244,29 +295,52 @@
 
                 let tabs = [];
                 try {
-                    const tabJson = episodeCard.params?.tabs || '';
+                    const tabJson = episodeCard.params && episodeCard.params.tabs;
                     tabs = tabJson ? JSON.parse(tabJson) : [];
                 } catch (e) { tabs = []; }
 
-                const pageId = episodeCard.params?.page_id || '';
+                const pageId = (episodeCard.params && episodeCard.params.page_id) || 'web_episode_list';
                 const tasks = [];
 
-                for (let i = 0; i < tabs.length; i++) {
-                    const tab = tabs[i];
-                    if (!tab || typeof tab !== 'object') continue;
-                    const begin = parseInt(tab.begin, 10);
-                    const end = parseInt(tab.end, 10);
-                    if (!Number.isFinite(begin) || !Number.isFinite(end) || begin > end) continue;
-                    if (rangeComplete(episodes, begin, end)) continue;
-                    const context = tab.page_context;
-                    if (typeof context !== 'string' || !context || !isSafeId(pageId)) continue;
-                    tasks.push({ begin, end, context, pageId });
+                if (tabs.length > 0) {
+                    for (let i = 0; i < tabs.length; i++) {
+                        const tab = tabs[i];
+                        if (!tab || typeof tab !== 'object') continue;
+                        const begin = parseInt(tab.begin, 10);
+                        const end = parseInt(tab.end, 10);
+                        if (!Number.isFinite(begin) || !Number.isFinite(end) || begin > end) continue;
+                        if (rangeComplete(episodes, begin, end)) continue;
+                        const context = tab.page_context;
+                        if (typeof context !== 'string' || !context || !isSafeId(pageId)) continue;
+                        tasks.push({ context: context, pageId: pageId });
+                    }
+                }
+
+                if (tasks.length === 0 && episodeCard.children_list) {
+                    const seenContexts = new Set();
+                    for (const key in episodeCard.children_list) {
+                        const group = episodeCard.children_list[key];
+                        if (!group || !group.cards) continue;
+                        for (let i = 0; i < group.cards.length; i++) {
+                            const card = group.cards[i];
+                            if (!card || !card.params) continue;
+                            if (card.type !== 'pc_web_episode_list') continue;
+                            if (card.params.page_type !== 'detail_operation') continue;
+                            const context = card.params.page_context;
+                            if (typeof context !== 'string' || !context || !isSafeId(pageId)) continue;
+                            if (seenContexts.has(context)) continue;
+                            seenContexts.add(context);
+                            tasks.push({ context: context, pageId: pageId });
+                        }
+                    }
                 }
 
                 if (tasks.length === 0) { finalize(); return; }
 
                 let doneCount = 0;
-                for (let i = 0; i < tasks.length; i++) {
+                const totalTasks = tasks.length;
+
+                for (let i = 0; i < totalTasks; i++) {
                     const task = tasks[i];
                     const payload = JSON.parse(JSON.stringify(basePayload));
                     payload.page_params = Object.assign({}, pageParams, {
@@ -281,9 +355,16 @@
                     payload.page_context = { latestPageContext: task.context };
 
                     request(ch, payload, function(pageData) {
-                        if (pageData) collectCards(pageData.CardList, cid, episodes, seen);
+                        if (pageData) {
+                            const cl = pageData.CardList;
+                            for (let j = 0; j < cl.length; j++) {
+                                const card = cl[j];
+                                if (!card || typeof card !== 'object') continue;
+                                collectCards(card, cid, episodes, seen, 0, cid);
+                            }
+                        }
                         doneCount++;
-                        if (doneCount === tasks.length) finalize();
+                        if (doneCount === totalTasks) finalize();
                     });
                 }
             }
@@ -292,64 +373,65 @@
                 const uniqueMap = new Map();
                 for (let i = 0; i < episodes.length; i++) {
                     const ep = episodes[i];
-                    if (!uniqueMap.has(ep.vid)) {
-                        uniqueMap.set(ep.vid, ep);
-                    } else {
-                        const existing = uniqueMap.get(ep.vid);
-                        if (existing.isTrailer && !ep.isTrailer) {
-                            uniqueMap.set(ep.vid, ep);
-                        }
-                    }
+                    const key = ep.num !== 999999 ? ('n_' + ep.num) : ('v_' + ep.vid);
+                    const prev = uniqueMap.get(key);
+                    if (!prev) uniqueMap.set(key, ep);
+                    else if (prev.isTrailer && !ep.isTrailer) uniqueMap.set(key, ep);
                 }
 
-                const finalEpisodes = Array.from(uniqueMap.values());
+                const finalEpisodes = [];
+                uniqueMap.forEach(v => finalEpisodes.push(v));
+
                 finalEpisodes.sort((a, b) => {
-                    const numA = extractEpisodeNumber(a.title);
-                    const numB = extractEpisodeNumber(b.title);
-                    if (numA !== numB) return numA - numB;
+                    if (a.num !== b.num) return a.num - b.num;
                     return partWeight(a.title) - partWeight(b.title);
                 });
 
-                // 缓存结果
                 episodeCache.set(cid, finalEpisodes);
                 callback(finalEpisodes);
             }
         });
     }
 
-    // ========== 注入选集（自适应分页） ==========
     let resizeObserver = null;
 
-    function injectSelector(episodes, currentVid) {
-        const playableWrapper = document.querySelector('div[class="playable-wrapper"]');
-        if (!playableWrapper) return;
+    function findTargetWrapper() {
+        for (let i = 0; i < WRAPPER_SELECTORS.length; i++) {
+            const el = document.querySelector(WRAPPER_SELECTORS[i]);
+            if (el) return el;
+        }
+        return null;
+    }
 
-        // 隐藏后续兄弟节点
-        let next = playableWrapper.nextElementSibling;
+    function injectSelector(episodes, currentVid) {
+        const targetWrapper = findTargetWrapper();
+        if (!targetWrapper) return;
+
+        let next = targetWrapper.nextElementSibling;
         while (next) {
             next.style.display = 'none';
             next = next.nextElementSibling;
         }
 
-        // 移除旧面板和旧 observer
         const oldContainer = document.getElementById('tm-qq-episode-panel');
         if (oldContainer) oldContainer.remove();
         if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
 
         if (!episodes || episodes.length === 0) return;
 
+        const totalEpisodes = episodes.length;
+
         const container = document.createElement('div');
         container.id = 'tm-qq-episode-panel';
         container.style.cssText = 'padding:8px 12px;background:#fff;color:#333;font-size:14px;box-sizing:border-box;';
 
         const hint = document.createElement('div');
-        hint.textContent = `选集（共${episodes.length}集）`;
-        hint.style.cssText = 'font-size:14px;font-weight:bold;color:#00a1ff;padding:2px 0 6px;border-bottom:1px solid #eee;';
+        hint.id = 'tm-qq-episode-hint';
+        hint.style.cssText = 'font-size:14px;font-weight:bold;color:#00a1ff;padding:2px 0 6px;border-bottom:1px solid #eee;cursor:pointer;user-select:none;';
         container.appendChild(hint);
 
         const listContainer = document.createElement('div');
         listContainer.id = 'tm-qq-episode-list';
-        listContainer.style.cssText = 'overflow:hidden;';
         container.appendChild(listContainer);
 
         const pagerContainer = document.createElement('div');
@@ -360,27 +442,24 @@
         let pageSize = 60;
         let totalPages = 1;
         let currentPage = 0;
+        let mode = savedMode;
 
-        // ===== 自适应分页 =====
         function calcPageSize() {
-            const wrapperRect = playableWrapper.getBoundingClientRect();
-            const availableHeight = window.innerHeight - wrapperRect.bottom;
-            const listHeight = availableHeight - 90;
+            const wrapperRect = targetWrapper.getBoundingClientRect();
+            const listHeight = window.innerHeight - wrapperRect.bottom - 90;
             if (listHeight < 60) return 12;
-
-            const btnHeight = 34;
-            const btnWidth = 80;
-            const rows = Math.max(1, Math.floor(listHeight / btnHeight));
-            const cols = Math.max(1, Math.floor(container.clientWidth / btnWidth));
+            const rows = Math.max(1, Math.floor(listHeight / 34));
+            const cols = Math.max(1, Math.floor(container.clientWidth / 80));
             return rows * cols;
         }
 
         function renderPage(page) {
             currentPage = page;
             listContainer.textContent = '';
+            listContainer.style.cssText = 'overflow:hidden;';
 
             const start = page * pageSize;
-            const end = Math.min(start + pageSize, episodes.length);
+            const end = Math.min(start + pageSize, totalEpisodes);
 
             const fragment = document.createDocumentFragment();
             for (let i = start; i < end; i++) {
@@ -406,6 +485,7 @@
 
         function renderPager() {
             pagerContainer.textContent = '';
+            pagerContainer.style.display = 'block';
             if (totalPages <= 1) return;
 
             const btnStyle = `
@@ -414,71 +494,183 @@
                 user-select:none;
             `;
 
+            const frag = document.createDocumentFragment();
+
+            const firstBtn = document.createElement('div');
+            firstBtn.textContent = '首页';
+            firstBtn.style.cssText = btnStyle + (currentPage === 0 ? 'opacity:0.4;cursor:not-allowed;' : '');
+            firstBtn.onclick = () => { if (currentPage > 0) renderPage(0); };
+            frag.appendChild(firstBtn);
+
             const prevBtn = document.createElement('div');
-            prevBtn.textContent = '上一页';
+            prevBtn.textContent = '上页';
             prevBtn.style.cssText = btnStyle + (currentPage === 0 ? 'opacity:0.4;cursor:not-allowed;' : '');
             prevBtn.onclick = () => { if (currentPage > 0) renderPage(currentPage - 1); };
-            pagerContainer.appendChild(prevBtn);
+            frag.appendChild(prevBtn);
 
             const pageInfo = document.createElement('span');
             pageInfo.textContent = `${currentPage + 1} / ${totalPages}`;
             pageInfo.style.cssText = 'display:inline-block;padding:4px 8px;font-size:12px;color:#666;';
-            pagerContainer.appendChild(pageInfo);
+            frag.appendChild(pageInfo);
 
             const nextBtn = document.createElement('div');
-            nextBtn.textContent = '下一页';
+            nextBtn.textContent = '下页';
             nextBtn.style.cssText = btnStyle + (currentPage === totalPages - 1 ? 'opacity:0.4;cursor:not-allowed;' : '');
             nextBtn.onclick = () => { if (currentPage < totalPages - 1) renderPage(currentPage + 1); };
-            pagerContainer.appendChild(nextBtn);
+            frag.appendChild(nextBtn);
+
+            const lastBtn = document.createElement('div');
+            lastBtn.textContent = '尾页';
+            lastBtn.style.cssText = btnStyle + (currentPage === totalPages - 1 ? 'opacity:0.4;cursor:not-allowed;' : '');
+            lastBtn.onclick = () => { if (currentPage < totalPages - 1) renderPage(totalPages - 1); };
+            frag.appendChild(lastBtn);
+
+            pagerContainer.appendChild(frag);
         }
 
-        playableWrapper.parentNode.insertBefore(container, playableWrapper.nextElementSibling);
+        function renderScrollMode() {
+            listContainer.textContent = '';
+            listContainer.style.cssText = `
+                display:flex;flex-direction:row;
+                overflow-x:auto;overflow-y:hidden;
+                gap:8px;padding:4px 0;
+                -webkit-overflow-scrolling:touch;
+            `;
 
-        requestAnimationFrame(() => {
-            pageSize = calcPageSize();
-            totalPages = Math.ceil(episodes.length / pageSize) || 1;
+            pagerContainer.textContent = '';
+            pagerContainer.style.display = 'none';
 
-            const currentIndex = episodes.findIndex(ep => ep.vid === currentVid);
-            const initialPage = currentIndex >= 0 ? Math.floor(currentIndex / pageSize) : 0;
-            renderPage(initialPage);
-        });
+            const fragment = document.createDocumentFragment();
+            for (let i = 0; i < totalEpisodes; i++) {
+                const ep = episodes[i];
+                if (!ep.image) continue;
+                const isCurrent = ep.vid === currentVid;
 
-        // 防抖 ResizeObserver
+                const item = document.createElement('div');
+                item.style.cssText = `
+                    flex:0 0 auto;width:140px;cursor:pointer;text-align:center;
+                    border-radius:6px;overflow:hidden;
+                    background:${isCurrent ? '#e6f4ff' : '#fff'};
+                    border:${isCurrent ? '2px solid #00a1ff' : '2px solid transparent'};
+                    box-sizing:border-box;
+                `;
+
+                const imgWrap = document.createElement('div');
+                imgWrap.style.cssText = `
+                    position:relative;width:100%;height:80px;
+                    background:#f2f2f2 center/cover no-repeat;
+                    background-image:url('${ep.image}');
+                `;
+                item.appendChild(imgWrap);
+
+                if (ep.tagImage) {
+                    const tagEl = document.createElement('img');
+                    tagEl.src = ep.tagImage;
+                    tagEl.style.cssText = `
+                        position:absolute;top:0;right:0;
+                        height:18px;width:auto;pointer-events:none;
+                    `;
+                    imgWrap.appendChild(tagEl);
+                }
+
+                if (ep.date) {
+                    const dateEl = document.createElement('div');
+                    dateEl.textContent = ep.date;
+                    dateEl.style.cssText = `
+                        position:absolute;right:0;bottom:0;
+                        font-size:11px;color:#fff;font-weight:bold;
+                        padding:2px 6px;line-height:1.2;
+                        background:linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0.55));
+                        text-shadow:0 1px 2px rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.7);
+                        pointer-events:none;
+                    `;
+                    imgWrap.appendChild(dateEl);
+                }
+
+                const title = document.createElement('div');
+                title.textContent = ep.originTitle || ep.title;
+                title.style.cssText = `
+                    font-size:12px;padding:4px;line-height:1.3;
+                    color:${isCurrent ? '#00a1ff' : '#333'};
+                    white-space:normal;overflow:hidden;
+                    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+                    height:34px;
+                `;
+                item.appendChild(title);
+
+                item.onclick = () => {
+                    if (isCurrent) return;
+                    window.location.href = window.location.href.replace(/vid=[^&]+/, `vid=${ep.vid}`);
+                };
+                fragment.appendChild(item);
+            }
+            listContainer.appendChild(fragment);
+
+            const currentIndex = episodes.findIndex(ep => ep.vid === currentVid && ep.image);
+            if (currentIndex >= 0) {
+                requestAnimationFrame(() => {
+                    const target = listContainer.children[currentIndex];
+                    if (target) listContainer.scrollLeft = target.offsetLeft - 20;
+                });
+            }
+        }
+
+        function applyMode() {
+            if (mode === 'scroll') {
+                hint.textContent = `选集（共${totalEpisodes}集）👉 点击切回分页`;
+                renderScrollMode();
+            } else {
+                hint.textContent = `选集（共${totalEpisodes}集）👉 点击切换滑动`;
+                requestAnimationFrame(() => {
+                    pageSize = calcPageSize();
+                    totalPages = Math.ceil(totalEpisodes / pageSize) || 1;
+                    const currentIndex = episodes.findIndex(ep => ep.vid === currentVid);
+                    const initialPage = currentIndex >= 0 ? Math.floor(currentIndex / pageSize) : 0;
+                    renderPage(initialPage);
+                });
+            }
+        }
+
+        hint.onclick = () => {
+            mode = mode === 'page' ? 'scroll' : 'page';
+            saveMode(mode);
+            applyMode();
+        };
+
+        targetWrapper.parentNode.insertBefore(container, targetWrapper.nextElementSibling);
+        applyMode();
+
         let resizeTimer = null;
         resizeObserver = new ResizeObserver(() => {
+            if (mode !== 'page') return;
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => {
                 const newSize = calcPageSize();
                 if (newSize !== pageSize) {
                     pageSize = newSize;
-                    totalPages = Math.ceil(episodes.length / pageSize) || 1;
+                    totalPages = Math.ceil(totalEpisodes / pageSize) || 1;
                     if (currentPage >= totalPages) currentPage = totalPages - 1;
                     renderPage(currentPage);
                 }
-            }, 200);
+            }, 250);
         });
         resizeObserver.observe(document.body);
     }
 
-    // ========== 播放页检测 ==========
     let lastHandledUrl = '';
     let debounceTimer = null;
-
-    function isPlayPage(url) {
-        return RE_PLAY_PAGE.test(url);
-    }
 
     function handlePage() {
         const url = location.href;
         if (url === lastHandledUrl) return;
         lastHandledUrl = url;
 
-        if (!isPlayPage(url)) return;
+        if (!RE_PLAY_PAGE.test(url)) return;
 
         const urlParams = new URLSearchParams(window.location.search);
         const cid = urlParams.get('cid');
-        const currentVid = urlParams.get('vid');
         if (!cid) return;
+        const currentVid = urlParams.get('vid');
 
         fetchEpisodes(cid, currentVid, (episodes) => {
             injectSelector(episodes, currentVid);
@@ -492,7 +684,6 @@
 
     handlePage();
 
-    // 单一 MutationObserver，监听 URL 变化
     let lastUrl = location.href;
     const observer = new MutationObserver(() => {
         const url = location.href;
