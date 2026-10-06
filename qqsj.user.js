@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         手机腾讯选集
-// @version      1
+// @version      2
 // @description  无聊折腾好玩的，能不能用不清楚
 // @author       屏幕前的你
 // @noframes
@@ -16,6 +16,63 @@
     if (window.top !== window.self) return;
     if (window.__tmQQEpisodeRunning) return;
     window.__tmQQEpisodeRunning = true;
+
+    const AD_PATTERNS = [
+        '/activity/downapp_activity.html',
+        /\/activity\/downapp_/i,
+        /\/download\/app/i
+    ];
+
+    function isAdUrl(url) {
+        if (typeof url !== 'string' || url === '') return false;
+        for (let i = 0; i < AD_PATTERNS.length; i++) {
+            const p = AD_PATTERNS[i];
+            if (typeof p === 'string') {
+                if (url.indexOf(p) !== -1) return true;
+            } else if (p instanceof RegExp && p.test(url)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if (isAdUrl(location.pathname)) {
+        try {
+            if (history.length > 1) {
+                history.back();
+            } else if (document.referrer) {
+                location.replace(document.referrer);
+            } else {
+                location.replace('https://m.v.qq.com/');
+            }
+        } catch (e) {}
+        return;
+    }
+
+    if (window.navigation && typeof window.navigation.addEventListener === 'function') {
+        try {
+            window.navigation.addEventListener('navigate', function(e) {
+                const u = e.destination && e.destination.url;
+                if (u && isAdUrl(u) && e.cancelable) e.preventDefault();
+            });
+        } catch (e) {}
+    }
+
+    const _rawOpen = window.open;
+    window.open = function(url) {
+        if (isAdUrl(typeof url === 'string' ? url : '')) return null;
+        return _rawOpen.apply(window, arguments);
+    };
+
+    document.addEventListener('click', function(e) {
+        const t = e.target;
+        if (!t || typeof t.closest !== 'function') return;
+        const a = t.closest('a[href]');
+        if (a && isAdUrl(a.href)) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
 
     const HAS_GM = typeof GM_xmlhttpRequest === 'function';
     const episodeCache = new Map();
@@ -444,6 +501,7 @@
         let totalPages = 1;
         let currentPage = 0;
         let mode = savedMode;
+        let switching = false;
 
         function calcPageSize() {
             const wrapperRect = targetWrapper.getBoundingClientRect();
@@ -454,10 +512,16 @@
             return rows * cols;
         }
 
+        function clearList() {
+            while (listContainer.firstChild) {
+                listContainer.removeChild(listContainer.firstChild);
+            }
+        }
+
         function renderPage(page) {
             currentPage = page;
-            listContainer.textContent = '';
-            listContainer.style.cssText = 'overflow:hidden;';
+            clearList();
+            listContainer.style.cssText = 'display:block;overflow:hidden;';
 
             const start = page * pageSize;
             const end = Math.min(start + pageSize, totalEpisodes);
@@ -471,6 +535,7 @@
                 btn.style.cssText = `
                     display:inline-block;padding:4px 10px;margin:3px;font-size:13px;
                     border-radius:4px;cursor:pointer;text-align:center;
+                    flex:initial;
                     background:${isCurrent ? '#00a1ff' : '#f2f2f2'};
                     color:${isCurrent ? '#fff' : '#333'};
                 `;
@@ -530,7 +595,7 @@
         }
 
         function renderScrollMode() {
-            listContainer.textContent = '';
+            clearList();
             listContainer.style.cssText = `
                 display:flex;flex-direction:row;
                 overflow-x:auto;overflow-y:hidden;
@@ -566,17 +631,13 @@
                 `;
 
                 const imgWrap = document.createElement('div');
-                imgWrap.style.cssText = `
-                    position:relative;width:100%;height:80px;background:#f2f2f2;
-                `;
+                imgWrap.style.cssText = `position:relative;width:100%;height:80px;background:#f2f2f2;`;
 
                 const img = document.createElement('img');
                 img.loading = 'lazy';
                 img.decoding = 'async';
                 img.src = ep.image;
-                img.style.cssText = `
-                    width:100%;height:100%;object-fit:cover;display:block;
-                `;
+                img.style.cssText = `width:100%;height:100%;object-fit:cover;display:block;`;
                 imgWrap.appendChild(img);
 
                 if (ep.tagImage) {
@@ -700,22 +761,29 @@
         }
 
         function applyMode() {
-            if (mode === 'scroll') {
-                hint.textContent = `选集（共${totalEpisodes}集）👉 点击切回分页`;
-                renderScrollMode();
-            } else {
-                hint.textContent = `选集（共${totalEpisodes}集）👉 点击切换滑动`;
-                requestAnimationFrame(() => {
-                    pageSize = calcPageSize();
-                    totalPages = Math.ceil(totalEpisodes / pageSize) || 1;
-                    const currentIndex = episodes.findIndex(ep => ep.vid === currentVid);
-                    const initialPage = currentIndex >= 0 ? Math.floor(currentIndex / pageSize) : 0;
-                    renderPage(initialPage);
-                });
+            if (switching) return;
+            switching = true;
+            try {
+                if (mode === 'scroll') {
+                    hint.textContent = `选集（共${totalEpisodes}集）👉 点击切回分页`;
+                    renderScrollMode();
+                } else {
+                    hint.textContent = `选集（共${totalEpisodes}集）👉 点击切换滑动`;
+                    requestAnimationFrame(() => {
+                        pageSize = calcPageSize();
+                        totalPages = Math.ceil(totalEpisodes / pageSize) || 1;
+                        const currentIndex = episodes.findIndex(ep => ep.vid === currentVid);
+                        const initialPage = currentIndex >= 0 ? Math.floor(currentIndex / pageSize) : 0;
+                        renderPage(initialPage);
+                    });
+                }
+            } finally {
+                switching = false;
             }
         }
 
         hint.onclick = () => {
+            if (switching) return;
             mode = mode === 'page' ? 'scroll' : 'page';
             saveMode(mode);
             applyMode();
