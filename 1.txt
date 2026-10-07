@@ -65,6 +65,12 @@ https://p.xbta.cc/https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/m
 https://gcore.jsdelivr.net/gh/qq963540817/jxb@main/qqsj.user.js
 https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/qqsj.user.js
 
+养老vip脚本:（单纯普通接口功能）
+
+https://seep.eu.org/https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/vip.user.js
+https://p.xbta.cc/https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/vip.user.js
+https://gcore.jsdelivr.net/gh/qq963540817/jxb@main/vip.user.js
+https://raw.githubusercontent.com/qq963540817/jxb/refs/heads/main/vip.user.js
 
 网站规则自定义写法如下例子:
 
