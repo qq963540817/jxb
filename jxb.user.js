@@ -54,7 +54,7 @@
 /* 以下是传统的视频解析 （支持json解析接口，最好需要加json:"1"参数，也可不加）*/
 {name:"普通解析",url:"https://art.txnp.cn/?url=",jxb:"原",hc:"0",zd:"1",qp:"1",diy:"yellow",dqjx:"1",qm:"1"},
 {name:"备用解析",url:"https://free.maccms.xyz/?url=",jxb:"原",hc:"0",zd:"1",qp:"1",diy:"yellow",dqjx:"1",qm:"1"},
-{name:"臻享",url:"https://jx.1ljx.com/_player/?tk=&url=",jxb:"原",hc:"0",zd:"1",qp:"1",dqjx:"1"},
+{name:"臻享",url:"https://jx.1ljx.com/_player/?url=",jxb:"原",hc:"0",zd:"1",qp:"1",dqjx:"1"},
 {name:"789",url:"https://api-api.789jiexi.net/jiexi.php?url=",jxb:"原",hc:"0",zd:"1",qp:"1",dqjx:"1"},
 {name:"洛雪",url:"https://jx.lxyy.club/index.php?url=",hc:"0",zd:"1",dqjx:"1",vip:"强制弹小窗"},
 {name:"风云",url:"https://v.jiasu7.top/jx.php?url=",hc:"0",zd:"1",dqjx:"1",vip:"强制弹小窗"},
