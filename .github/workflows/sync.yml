@@ -1,0 +1,67 @@
+name: Auto Sync from dashu
+
+on:
+  schedule:
+    - cron: '0 * * * *' # 每小时自动运行一次（UTC 整点）
+  workflow_dispatch: # 允许手动点击运行
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout jxb
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync files
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 0. 确保 Java 项目 .gitignore 存在（防止被 rsync 删除或覆盖）
+          cat > .gitignore <<'EOF'
+          # Compiled class file
+          *.class
+
+          # Log file
+          *.log
+
+          # BlueJ files
+          *.ctxt
+
+          # Mobile Tools for Java (J2ME)
+          .mtj.tmp/
+
+          # Package Files #
+          *.jar
+          *.war
+          *.nar
+          *.ear
+          *.zip
+          *.tar.gz
+          *.rar
+
+          # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+          hs_err_pid*
+          replay_pid*
+          EOF
+
+          # 1. 克隆 dashu 的完整仓库
+          git clone https://github.com/963540817/dashu.git /tmp/dashu
+
+          # 2. 使用 rsync 强制同步，并删除目标仓库中多余的文件
+          # --exclude='.github'    保留自动同步脚本本身
+          # --exclude='.gitignore' 保留上面写入的 Java 忽略规则
+          rsync -av --delete --exclude='.github' --exclude='.gitignore' /tmp/dashu/ ./
+
+          # 3. 清理被 .gitignore 忽略的历史跟踪文件（幂等）
+          git rm -r --cached . >/dev/null 2>&1 || true
+          git add -A
+          if [[ -n $(git status -s) ]]; then
+            git commit -m "Force sync from dashu (mirror mode)"
+          fi
+
+          # 4. 使用带 Token 的 URL 强制推送
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/qq963540817/jxb.git
+          git push origin main --force
